@@ -13,8 +13,15 @@ import (
 
 	"github.com/armon/go-socks5"
 
+    "github.com/elazarl/goproxy"
+
 	"golang.zx2c4.com/wireguard/tun/netstack"
 	"net/netip"
+
+	"encoding/base64"
+	"net/http"
+	"net/url"
+	"crypto/tls"
 )
 
 // errorLogger is the logger to print error message
@@ -135,6 +142,41 @@ func (config *Socks5Config) SpawnRoutine(vt *VirtualTun) {
 	if err := server.ListenAndServe("tcp", config.BindAddress); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// SpawnRoutine spawns a http proxy server.
+func (config *HttpConfig) SpawnRoutine(vt *VirtualTun) {
+
+	proxy := goproxy.NewProxyHttpServer()
+
+    proxyURLString := "socks5://" + config.BindAddress
+	if len(proxyURLString) > 0 {
+		proxyURL, err := url.Parse(proxyURLString)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		proxy.Tr = &http.Transport{
+			Proxy:           http.ProxyURL(proxyURL),
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+
+		username := proxyURL.User.Username()
+		password, _ := proxyURL.User.Password()
+		var proxyAuthorization string
+		if len(username) > 0 || len(password) > 0 {
+			proxyAuthorization = "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+password))
+		}
+		proxy.ConnectDial = proxy.NewConnectDialToProxyWithHandler(proxyURLString, func(req *http.Request) {
+			if len(proxyAuthorization) > 0 {
+				req.Header.Set("Proxy-Authorization", proxyAuthorization)
+			}
+		})
+	}
+
+	//proxy.Verbose = true
+	log.Fatal(http.ListenAndServe(config.BindAddress, proxy))
+
 }
 
 // Valid checks the authentication data in CredentialValidator and compare them
